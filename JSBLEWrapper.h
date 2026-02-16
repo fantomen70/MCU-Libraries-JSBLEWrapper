@@ -7,11 +7,18 @@
 #include <string>
 #include <unordered_map>
 
-#if defined(ESP32)
-  #include "freertos/FreeRTOS.h"
-  #include "freertos/task.h"
-#endif
-
+/**
+ * @brief Enkel wrapper runt ESP32 BLE Server (NimBLE-Arduino 2.3.7)
+ *
+ * - Startar BLE-tjänst
+ * - Tar emot AT-kommandon: "AT" + cmd(2 chars) + value
+ * - Skickar notifieringar (TX notify)
+ * - Tar emot data (RX write)
+ * - Stöd för kommandodispach (registrera handler per cmd)
+ * - Advertisar Manufacturer Data med stabilt DeviceId
+ *
+ * Ingen bakgrundstask behövs.
+ */
 class JSBLEWrapper
 {
 public:
@@ -25,6 +32,7 @@ public:
   void Start();
   void Stop();
 
+  /// Payload: "AT" + command(2) + value
   void SendData(const std::string& command, const std::string& value);
 
   void SetOnReceiveCallback(void (*onReceive)(std::string cmd, std::string value));
@@ -34,6 +42,7 @@ public:
   void UnregisterCommandHandler(const std::string& cmd);
   void ClearCommandHandlers();
 
+  /// Debug/identifiering: samma 8 bytes som advertisas i manufacturer data (hex, 16 tecken)
   std::string GetDeviceIdHex() const;
 
 private:
@@ -42,19 +51,12 @@ private:
   void BuildDeviceId();
   void StartAdvertising();
 
-#if defined(ESP32)
-  static void BleTaskEntry(void* parameter);
-  void BleTaskLoop();
-  void StartBleTaskIfNeeded();
-  void StopBleTaskIfRunning();
+  /// "BaseName-XXXX" där XXXX är sista 4 hex av DeviceId
+  std::string BuildAdvertisedName() const;
 
-  TaskHandle_t _bleTaskHandle = nullptr;
-  volatile bool _runTask = false;
-#endif
+  bool _deviceConnected = false;
 
-  bool deviceConnected = false;
-
-  std::string _deviceName;
+  std::string _deviceName; // base name
   std::string _serviceUUID;
   std::string _characteristicTxUUID;
   std::string _characteristicRxUUID;

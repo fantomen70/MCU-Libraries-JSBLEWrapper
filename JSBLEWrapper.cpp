@@ -40,6 +40,23 @@ std::string JSBLEWrapper::GetDeviceIdHex() const
   return BytesToHex(_deviceId, 8);
 }
 
+std::string JSBLEWrapper::BuildAdvertisedName() const
+{
+  // Sista 2 bytes => 4 hex-tecken
+  const uint8_t b6 = _deviceId[6];
+  const uint8_t b7 = _deviceId[7];
+
+  static const char* hex = "0123456789ABCDEF";
+  char suffix[5];
+  suffix[0] = hex[(b6 >> 4) & 0xF];
+  suffix[1] = hex[b6 & 0xF];
+  suffix[2] = hex[(b7 >> 4) & 0xF];
+  suffix[3] = hex[b7 & 0xF];
+  suffix[4] = '\0';
+
+  return _deviceName + "-" + std::string(suffix);
+}
+
 void JSBLEWrapper::StartAdvertising()
 {
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
@@ -48,10 +65,12 @@ void JSBLEWrapper::StartAdvertising()
   adv->stop();
 
   NimBLEAdvertisementData adData;
-  adData.setFlags(0x06);
+  adData.setFlags(0x06); // LE General Discoverable + BR/EDR Not Supported
   adData.addServiceUUID(_serviceUUID);
 
-  const uint16_t companyId = 0xFFFF;
+  // Manufacturer Data:
+  // CompanyId(2 LE) + 'J''S' + version(1) + deviceId(8)
+  const uint16_t companyId = 0xFFFF; // intern/lab
   const uint8_t version = 0x01;
 
   uint8_t payload[2 + 2 + 1 + 8];
@@ -64,81 +83,15 @@ void JSBLEWrapper::StartAdvertising()
 
   adData.setManufacturerData(std::string((char*)payload, sizeof(payload)));
 
+  // Scan response: unikt namn
   NimBLEAdvertisementData srData;
-  srData.setName(_deviceName);
+  srData.setName(BuildAdvertisedName());
 
   adv->setAdvertisementData(adData);
   adv->setScanResponseData(srData);
 
   adv->start();
 }
-
-#if defined(ESP32)
-void JSBLEWrapper::StartBleTaskIfNeeded()
-{
-  if (_bleTaskHandle != nullptr) return;
-
-  _runTask = true;
-
-  // ESP32-C3 är single-core. På single-core ska vi inte pinna till core 1.
-#if defined(CONFIG_FREERTOS_UNICORE)
-  BaseType_t ok = xTaskCreate(
-    BleTaskEntry,
-    "JSBLEWrapperTask",
-    4096,
-    this,
-    1,
-    &_bleTaskHandle
-  );
-#else
-  // Dual-core ESP32: pinna gärna till core 1 (eller 0 om du vill)
-  BaseType_t ok = xTaskCreatePinnedToCore(
-    BleTaskEntry,
-    "JSBLEWrapperTask",
-    4096,
-    this,
-    1,
-    &_bleTaskHandle,
-    1
-  );
-#endif
-
-  if (ok != pdPASS)
-  {
-    _bleTaskHandle = nullptr;
-    _runTask = false;
-    Serial.println("Failed to create BLE task.");
-  }
-}
-
-void JSBLEWrapper::StopBleTaskIfRunning()
-{
-  _runTask = false;
-
-  if (_bleTaskHandle != nullptr)
-  {
-    vTaskDelay(pdMS_TO_TICKS(50));
-    vTaskDelete(_bleTaskHandle);
-    _bleTaskHandle = nullptr;
-  }
-}
-
-void JSBLEWrapper::BleTaskEntry(void* parameter)
-{
-  auto* self = static_cast<JSBLEWrapper*>(parameter);
-  self->BleTaskLoop();
-}
-
-void JSBLEWrapper::BleTaskLoop()
-{
-  while (_runTask)
-  {
-    // NimBLE kräver ingen polling; håll tasken lätt.
-    vTaskDelay(pdMS_TO_TICKS(500));
-  }
-  vTaskDelete(nullptr);
-}
-#endif
 
 void JSBLEWrapper::Start()
 {
@@ -172,35 +125,33 @@ void JSBLEWrapper::Start()
 
   StartAdvertising();
 
-  Serial.print("BLE started. DeviceId=");
+  Serial.print("BLE started. Name=");
+  Serial.print(BuildAdvertisedName().c_str());
+  Serial.print(" DeviceId=");
   Serial.println(GetDeviceIdHex().c_str());
-
-#if defined(ESP32)
-  StartBleTaskIfNeeded();
-#endif
 }
 
 void JSBLEWrapper::Stop()
 {
-#if defined(ESP32)
-  StopBleTaskIfRunning();
-#endif
-
   if (auto* adv = NimBLEDevice::getAdvertising())
     adv->stop();
 
-  deviceConnected = false;
+  _deviceConnected = false;
+
+  // Vill du riva ner allt helt:
+  // NimBLEDevice::deinit(true);
 }
 
 void JSBLEWrapper::SendData(const std::string& command, const std::string& value)
 {
-  if (!deviceConnected) return;
+  if (!_deviceConnected) return;
   if (_txCharacteristic == nullptr) return;
   if (command.size() != 2) return;
 
   const std::string payload = "AT" + command + value;
   _txCharacteristic->setValue(payload);
   _txCharacteristic->notify();
+
   delay(10);
 }
 
@@ -278,18 +229,18 @@ JSBLEServerCallbacks::JSBLEServerCallbacks(JSBLEWrapper* owner)
 void JSBLEServerCallbacks::onConnect(NimBLEServer*, NimBLEConnInfo&)
 {
   if (_owner == nullptr) return;
-  _owner->deviceConnected = true;
+  _owner->_deviceConnected = true;
 }
 
 void JSBLEServerCallbacks::onDisconnect(NimBLEServer*, NimBLEConnInfo&, int)
 {
   if (_owner == nullptr) return;
 
-  _owner->deviceConnected = false;
+  _owner->_deviceConnected = false;
 
   if (_owner->_onDisconnectedCallback != nullptr)
     _owner->_onDisconnectedCallback();
 
-  // snabb reconnect: börja advertisera igen
+  // Snabb reconnect
   _owner->StartAdvertising();
 }
