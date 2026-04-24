@@ -16,11 +16,13 @@ static std::string BytesToHex(const uint8_t* data, size_t len)
 JSBLEWrapper::JSBLEWrapper(const std::string& deviceName,
                            const std::string& serviceUUID,
                            const std::string& characteristicTx,
-                           const std::string& characteristicRx)
+                           const std::string& characteristicRx,
+                           uint16_t deviceTypeId)
   : _deviceName(deviceName),
     _serviceUUID(serviceUUID),
     _characteristicTxUUID(characteristicTx),
-    _characteristicRxUUID(characteristicRx)
+    _characteristicRxUUID(characteristicRx),
+    _deviceTypeId(deviceTypeId)
 {
   BuildDeviceId();
 }
@@ -42,7 +44,7 @@ std::string JSBLEWrapper::GetDeviceIdHex() const
 
 std::string JSBLEWrapper::BuildAdvertisedName() const
 {
-  // Sista 2 bytes => 4 hex-tecken
+  // Sista 2 bytes av MAC => 4 hex-tecken suffix
   const uint8_t b6 = _deviceId[6];
   const uint8_t b7 = _deviceId[7];
 
@@ -69,21 +71,26 @@ void JSBLEWrapper::StartAdvertising()
   adData.addServiceUUID(_serviceUUID);
 
   // Manufacturer Data:
-  // CompanyId(2 LE) + 'J''S' + version(1) + deviceId(8)
+  // CompanyId(2 LE) + 'J'(1) + 'S'(1) + version(1) + DeviceTypeId(2 LE)
+  // Totalt 7 bytes.
+  // DeviceTypeId identifierar enhetstypen, t.ex. 0x0001=BMS, 0x0002=Tank.
+  // Appen filtrerar på 'J'+'S'+DeviceTypeId vid scanning.
+  // Enheter av samma typ särskiljs via annonserat namn (BaseName-XXXX).
   const uint16_t companyId = 0xFFFF; // intern/lab
-  const uint8_t version = 0x01;
+  const uint8_t  version   = 0x01;
 
-  uint8_t payload[2 + 2 + 1 + 8];
+  uint8_t payload[7];
   payload[0] = (uint8_t)(companyId & 0xFF);
   payload[1] = (uint8_t)((companyId >> 8) & 0xFF);
   payload[2] = (uint8_t)'J';
   payload[3] = (uint8_t)'S';
   payload[4] = version;
-  memcpy(&payload[5], _deviceId, 8);
+  payload[5] = (uint8_t)(_deviceTypeId & 0xFF);
+  payload[6] = (uint8_t)((_deviceTypeId >> 8) & 0xFF);
 
   adData.setManufacturerData(std::string((char*)payload, sizeof(payload)));
 
-  // Scan response: unikt namn
+  // Scan response: unikt namn (BaseName-XXXX)
   NimBLEAdvertisementData srData;
   srData.setName(BuildAdvertisedName());
 
@@ -127,6 +134,8 @@ void JSBLEWrapper::Start()
 
   Serial.print("BLE started. Name=");
   Serial.print(BuildAdvertisedName().c_str());
+  Serial.print(" TypeId=0x");
+  Serial.print(_deviceTypeId, HEX);
   Serial.print(" DeviceId=");
   Serial.println(GetDeviceIdHex().c_str());
 }
@@ -137,9 +146,6 @@ void JSBLEWrapper::Stop()
     adv->stop();
 
   _deviceConnected = false;
-
-  // Vill du riva ner allt helt:
-  // NimBLEDevice::deinit(true);
 }
 
 void JSBLEWrapper::SendData(const std::string& command, const std::string& value)
@@ -155,7 +161,7 @@ void JSBLEWrapper::SendData(const std::string& command, const std::string& value
   delay(10);
 }
 
-void JSBLEWrapper::SetOnReceiveCallback(void (*onReceive)(std::string, std::string))
+void JSBLEWrapper::SetOnReceiveCallback(void (*onReceive)(std::string cmd, std::string value))
 {
   _onReceiveData = onReceive;
 }
@@ -211,7 +217,7 @@ void JSBLECharacteristicCallbacks::onWrite(NimBLECharacteristic* pCharacteristic
   if (rxValue.size() < 4) return;
   if (rxValue[0] != 'A' || rxValue[1] != 'T') return;
 
-  const std::string cmd = rxValue.substr(2, 2);
+  const std::string cmd   = rxValue.substr(2, 2);
   const std::string value = (rxValue.size() > 4) ? rxValue.substr(4) : "";
 
   if (_owner->TryDispatchCommand(cmd, value))

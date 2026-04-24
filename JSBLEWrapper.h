@@ -14,8 +14,18 @@
  * - Tar emot AT-kommandon: "AT" + cmd(2 chars) + value
  * - Skickar notifieringar (TX notify)
  * - Tar emot data (RX write)
- * - Stöd för kommandodispach (registrera handler per cmd)
- * - Advertisar Manufacturer Data med stabilt DeviceId
+ * - Stöd för kommandodispatch (registrera handler per cmd)
+ * - Advertisar Manufacturer Data med 'JS' + version + DeviceTypeId
+ *
+ * Manufacturer Data-layout (7 bytes):
+ *   [0-1] CompanyId   (0xFFFF, little-endian)
+ *   [2]   'J'
+ *   [3]   'S'
+ *   [4]   version     (0x01)
+ *   [5-6] DeviceTypeId (uint16_t, little-endian)
+ *
+ * Appen filtrerar på 'J'+'S'+DeviceTypeId vid scanning.
+ * Flera enheter av samma typ särskiljs via annonserat namn (BaseName-XXXX).
  *
  * Ingen bakgrundstask behövs.
  */
@@ -24,10 +34,18 @@ class JSBLEWrapper
 public:
   using CommandHandler = void (*)(JSBLEWrapper* self, const std::string& cmd, const std::string& value);
 
+  /**
+   * @param deviceName   Basnamn utan suffix, t.ex. "ChargeCtrl"
+   * @param serviceUUID  GATT Service UUID
+   * @param characteristicTx  TX karakteristika UUID (NOTIFY, ESP32→App)
+   * @param characteristicRx  RX karakteristika UUID (WRITE, App→ESP32)
+   * @param deviceTypeId Identifierar enhetstypen, t.ex. 0x0001=BMS, 0x0002=Tank
+   */
   JSBLEWrapper(const std::string& deviceName,
                const std::string& serviceUUID,
                const std::string& characteristicTx,
-               const std::string& characteristicRx);
+               const std::string& characteristicRx,
+               uint16_t deviceTypeId);
 
   void Start();
   void Stop();
@@ -42,7 +60,7 @@ public:
   void UnregisterCommandHandler(const std::string& cmd);
   void ClearCommandHandlers();
 
-  /// Debug/identifiering: samma 8 bytes som advertisas i manufacturer data (hex, 16 tecken)
+  /// MAC-baserat enhets-ID (hex, 16 tecken) – används för namnets XXXX-suffix
   std::string GetDeviceIdHex() const;
 
 private:
@@ -51,15 +69,16 @@ private:
   void BuildDeviceId();
   void StartAdvertising();
 
-  /// "BaseName-XXXX" där XXXX är sista 4 hex av DeviceId
+  /// "BaseName-XXXX" där XXXX är sista 4 hex av MAC
   std::string BuildAdvertisedName() const;
 
   bool _deviceConnected = false;
 
-  std::string _deviceName; // base name
+  std::string _deviceName;
   std::string _serviceUUID;
   std::string _characteristicTxUUID;
   std::string _characteristicRxUUID;
+  uint16_t    _deviceTypeId;
 
   NimBLEServer*         _server = nullptr;
   NimBLEService*        _service = nullptr;
